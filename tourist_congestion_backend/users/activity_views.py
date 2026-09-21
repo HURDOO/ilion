@@ -1,3 +1,5 @@
+import logging
+
 from django.db import transaction
 from django.db.models import Avg, F, Sum
 from django.shortcuts import get_object_or_404
@@ -13,15 +15,25 @@ from .serializers import FavoriteCreateSerializer
 from .views import success_response, error_response
 from places.models import Place
 
+logger = logging.getLogger(__name__)
+
+
+# 탈퇴자가 남긴 글의 작성자 표기. 원 작성자는 복원할 수 없다.
+ANONYMOUS_AUTHOR_NAME = '탈퇴한 사용자'
+
 
 def review_data(item, request):
     return {'id': item.id, 'place_id': item.place_id, 'place_name': item.place.name,
-            'author_id': item.user_id, 'author_nickname': item.user.nickname,
+            'author_id': item.user_id,
+            'author_nickname': item.user.nickname if item.user_id else ANONYMOUS_AUTHOR_NAME,
             'text': item.text, 'rating': item.rating,
             'photo_url': request.build_absolute_uri(item.photo.url) if item.photo else None,
             'created_at': item.created_at, 'like_count': item.likes.count(),
             'is_liked': request.user.is_authenticated and item.likes.filter(user=request.user).exists(),
-            'is_mine': request.user.id == item.user_id, 'visit_verified': False}
+            # item.user_id가 None이고 비로그인 방문자의 request.user.id도 None이라
+            # 단순 == 비교는 탈퇴자 글을 전부 '내 글'로 만든다.
+            'is_mine': item.user_id is not None and request.user.id == item.user_id,
+            'visit_verified': False}
 
 
 def companion_data(item, request):
@@ -77,6 +89,21 @@ class ReviewsView(APIView):
         return success_response({'review': review_data(item, request), 'points_awarded': 50 if awarded else 0}, status_code=201)
 
 
+def _delete_photo_after_commit(storage, name):
+    """Remove a review photo the DB no longer references, once that change is committed.
+
+    Deleting first would leave a review pointing at a missing file if the transaction
+    rolled back. A failed delete leaves an unreferenced file; it is logged, not raised.
+    """
+    def delete():
+        try:
+            storage.delete(name)
+        except OSError:
+            logger.exception('review photo delete failed: %s', name)
+
+    transaction.on_commit(delete)
+
+
 class ReviewDetailView(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -87,7 +114,10 @@ class ReviewDetailView(APIView):
         serializer.is_valid(raise_exception=True)
         if 'place' in serializer.validated_data and serializer.validated_data['place'] != item.place:
             return error_response('등록된 후기의 장소는 변경할 수 없습니다.')
+        previous_photo = item.photo.name
         serializer.save()
+        if previous_photo and item.photo.name != previous_photo:
+            _delete_photo_after_commit(item.photo.storage, previous_photo)
         update_rating(item.place)
         return success_response(review_data(item, request))
 
@@ -95,7 +125,10 @@ class ReviewDetailView(APIView):
     def delete(self, request, pk):
         item = get_object_or_404(Review, pk=pk, user=request.user)
         place = item.place
+        photo_storage, photo_name = item.photo.storage, item.photo.name
         item.delete()
+        if photo_name:
+            _delete_photo_after_commit(photo_storage, photo_name)
         update_rating(place)
         return success_response()
 
@@ -255,7 +288,7 @@ class NotificationsView(APIView):
 
     def get(self, request):
         items = []
-        for like in ReviewLike.objects.filter(review__user=request.user).exclude(user=request.user).select_related('user', 'review__place').order_by('-created_at')[:50]:
+        for like in ReviewLike.objects.filter(review__user=request.user, user__isnull=False).exclude(user=request.user).select_related('user', 'review__place').order_by('-created_at')[:50]:
             items.append({'id': f'like-{like.pk}', 'title': '후기 좋아요', 'body': f'{like.user.nickname}님이 {like.review.place.name} 후기를 좋아합니다.', 'created_at': like.created_at})
         for member in CompanionMember.objects.filter(companion__user=request.user).exclude(user=request.user).select_related('user', 'companion').order_by('-created_at')[:50]:
             items.append({'id': f'join-{member.pk}', 'title': '동행 참여', 'body': f'{member.user.nickname}님이 {member.companion.title}에 참여했습니다.', 'created_at': member.created_at})

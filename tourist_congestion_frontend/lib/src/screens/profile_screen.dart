@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import '../services/api_client.dart';
 import '../services/app_session.dart';
+import '../services/legal_links.dart';
 import '../theme/app_theme.dart';
 import '../widgets/activity_data.dart';
 import '../widgets/app_chrome.dart';
@@ -21,6 +22,32 @@ class ProfileScreen extends StatelessWidget {
     if (!context.mounted) return;
     await Navigator.push(
         context, MaterialPageRoute<void>(builder: (_) => screen));
+  }
+
+  Future<void> _logout(BuildContext context, AppSession session) async {
+    final confirmed = await showDialog<bool>(
+        context: context,
+        builder: (c) => AlertDialog(
+              title: const Text('로그아웃'),
+              content: const Text('로그아웃하시겠어요?'),
+              actions: [
+                TextButton(
+                    onPressed: () => Navigator.pop(c), child: const Text('취소')),
+                FilledButton(
+                    onPressed: () => Navigator.pop(c, true),
+                    child: const Text('로그아웃')),
+              ],
+            ));
+    if (confirmed != true || !context.mounted) return;
+    try {
+      await session.logout();
+      if (context.mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(const SnackBar(content: Text('로그아웃했어요.')));
+      }
+    } catch (e) {
+      if (context.mounted) activityError(context, e);
+    }
   }
 
   Future<void> _nickname(BuildContext context) async {
@@ -71,9 +98,9 @@ class ProfileScreen extends StatelessWidget {
                             style: TextStyle(
                                 fontSize: 16, fontWeight: FontWeight.w700))),
                     IconButton(
-                        tooltip: '알림 설정',
+                        tooltip: '계정 설정',
                         onPressed: () => _open(
-                            context, const NotificationSettingsScreen(),
+                            context, const AccountSettingsScreen(),
                             auth: true),
                         icon: const Icon(Icons.settings_outlined, size: 22)),
                     IconButton(
@@ -168,19 +195,20 @@ class ProfileScreen extends StatelessWidget {
                   auth: true),
               _menu(context, Icons.headset_mic_outlined, '도움말 및 문의',
                   const HelpScreen()),
+              _link(context, Icons.description_outlined, '서비스 이용약관', '/terms'),
+              _link(
+                  context, Icons.privacy_tip_outlined, '개인정보 처리방침', '/privacy'),
+              if (session.isAuthenticated)
+                _menu(context, Icons.manage_accounts_outlined, '계정 설정',
+                    const AccountSettingsScreen(),
+                    auth: true),
               if (session.isAuthenticated)
                 Padding(
                     padding: const EdgeInsets.fromLTRB(20, 16, 20, 24),
                     child: Align(
                         alignment: Alignment.centerLeft,
                         child: TextButton(
-                            onPressed: () async {
-                              try {
-                                await session.logout();
-                              } catch (e) {
-                                if (context.mounted) activityError(context, e);
-                              }
-                            },
+                            onPressed: () => _logout(context, session),
                             child: const Text('로그아웃',
                                 style: TextStyle(
                                     fontSize: 12,
@@ -224,6 +252,17 @@ class ProfileScreen extends StatelessWidget {
         trailing: const Icon(Icons.chevron_right_rounded,
             size: 19, color: AppColors.textMuted),
         onTap: () => _open(context, screen, auth: auth),
+      );
+
+  Widget _link(
+          BuildContext context, IconData icon, String title, String path) =>
+      ListTile(
+        contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 2),
+        leading: Icon(icon, size: 21, color: AppColors.textMuted),
+        title: Text(title, style: const TextStyle(fontSize: 14)),
+        trailing: const Icon(Icons.open_in_new_rounded,
+            size: 17, color: AppColors.textMuted),
+        onTap: () => openLegalPage(context, path),
       );
 }
 

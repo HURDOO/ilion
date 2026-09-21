@@ -169,6 +169,71 @@ class PlaceAPITests(TestCase):
             0,
         )
 
+    def test_delayed_crowd_remains_filterable_until_45_minutes(self):
+        CrowdData.objects.exclude(pk=self.latest_observation.pk).delete()
+        self.latest_observation.observed_at = timezone.now() - timedelta(minutes=35)
+        self.latest_observation.save(update_fields=['observed_at'])
+
+        delayed = self.client.get(reverse('place-list'), {'crowd_level': 'busy'})
+        self.assertEqual(delayed.json()['data']['pagination']['total'], 1)
+        crowd = delayed.json()['data']['items'][0]['latest_crowd']
+        self.assertTrue(crowd['is_delayed'])
+        self.assertFalse(crowd['is_expired'])
+
+        self.latest_observation.observed_at = timezone.now() - timedelta(minutes=46)
+        self.latest_observation.save(update_fields=['observed_at'])
+        expired = self.client.get(reverse('place-list'), {'crowd_level': 'busy'})
+        self.assertEqual(expired.json()['data']['pagination']['total'], 0)
+        unfiltered = self.client.get(reverse('place-detail', args=[self.gyeongbokgung.pk]))
+        crowd = unfiltered.json()['data']['latest_crowd']
+        self.assertFalse(crowd['is_delayed'])
+        self.assertTrue(crowd['is_expired'])
+
+    def test_keyword_ranks_name_matches_above_address_matches(self):
+        # A shop that merely sits next to a landmark must not outrank it.
+        shop = self._create_place(
+            name='GS25 경복궁앞점',
+            category='기타',
+            region_code='11-110',
+            address='서울특별시 종로구 사직로 160',
+            latitude='37.576000',
+            longitude='126.976000',
+        )
+        self._create_source(shop, 'shop-1')
+        neighbour = self._create_place(
+            name='한옥 카페',
+            category='기타',
+            region_code='11-110',
+            address='서울특별시 종로구 경복궁길 12',
+            latitude='37.577000',
+            longitude='126.977000',
+        )
+        self._create_source(neighbour, 'neighbour-1')
+
+        response = self.client.get(reverse('place-list'), {'keyword': '경복궁'})
+        names = [item['name'] for item in response.json()['data']['items']]
+
+        self.assertEqual(names[0], '경복궁')
+        self.assertLess(names.index('GS25 경복궁앞점'), names.index('한옥 카페'))
+
+    def test_default_order_leads_with_places_that_have_content(self):
+        bracketed = self._create_place(
+            name='(구)옛 은행 지점',
+            category='관광지',
+            region_code='28-125',
+            address='인천광역시 중구 신포로 69',
+            latitude='37.472867',
+            longitude='126.621384',
+        )
+        self._create_source(bracketed, 'bracketed-1')
+
+        response = self.client.get(reverse('place-list'))
+        names = [item['name'] for item in response.json()['data']['items']]
+
+        # 경복궁 is the only place with an image and a description.
+        self.assertEqual(names[0], '경복궁')
+        self.assertEqual(names[-1], '(구)옛 은행 지점')
+
     def test_list_paginates_results(self):
         response = self.client.get(
             reverse('place-list'), {'page': 2, 'page_size': 2}
